@@ -2,58 +2,67 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
+import requests
+from datetime import datetime
 
-st.set_page_config(
-    page_title="Time-Series Plot",
-    page_icon="📈",
-    layout="wide",
-)
-
+st.set_page_config(page_title="Time-Series Plot", page_icon="📈", layout="wide")
 st.title("📈 Reservoir Data Plot")
 
-# Path to the csv file — goes up one level from pages/ to find data/
-data_path = Path(__file__).resolve().parents[1] / "data" / "reservoirs.csv"
+NVE_BASE = "https://biapi.nve.no/magasinstatistikk/api/Magasinstatistikk"
 
 # Read the data
-@st.cache_data
+@st.cache_data(ttl=3600, show_spinner="Fetching data from NVE…")
 def load_data():
-    df = pd.read_csv(data_path)
+    resp = requests.get(f"{NVE_BASE}/HentOffentligData", timeout=30)
+    resp.raise_for_status()
 
-    # Rename columns to understandable English names
-    df = df.rename(columns={
-        "dato_Id":                  "date",
-        "fyllingsgrad":             "fill_level",
-        "kapasitet_TWh":            "capacity_TWh",
-        "fylling_TWh":              "stored_energy_TWh",
-        "fyllingsgrad_forrige_uke": "fill_level_previous_week",
-        "endring_fyllingsgrad":     "change_in_fill_level",
-    })
+    raw = resp.json()
+    df = pd.DataFrame(raw)
+
+    # Rename columns
+    rename_map = {
+        "dato_Id":                 "date",
+        "omrType":                 "area_type",
+        "omrnr":                   "area_nr",
+        "iso_aar":                 "year",
+        "iso_uke":                 "week",
+        "fyllingsgrad":            "fill_level",
+        "kapasitet_TWh":           "capacity_TWh",
+        "fylling_TWh":             "stored_energy_TWh",
+        "fyllingsgrad_forrige_uke":"fill_level_previous_week",
+        "endring_fyllingsgrad":    "change_in_fill_level",
+    }
+    df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
 
     # Convert date column to datetime
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    df.sort_values("date", inplace=True)
+    df.reset_index(drop=True, inplace=True)
 
     return df
 
 df = load_data()
 
+if df.empty:
+    st.warning("No data returned for the selected year range.")
+    st.stop()
+
+if "area_type" in df.columns:
+    area_types = sorted(df["area_type"].dropna().unique().tolist())
+    selected_area = st.radio("Area type", area_types, horizontal=True)
+    df = df[df["area_type"] == selected_area].copy()
+
 # Sort by date
 df = df.sort_values(["date"])
 
 # All numeric columns available for plotting
-csv_columns = [
-    "date",
-    "fill_level",
-    "capacity_TWh",
-    "stored_energy_TWh",
-    "fill_level_previous_week",
-    "change_in_fill_level",
-]
+plot_columns = [c for c in ["fill_level", "capacity_TWh", "stored_energy_TWh",
+                              "fill_level_previous_week", "change_in_fill_level"]
+                if c in df.columns]
 
 # Choose a column
-selected_column = st.selectbox(
-    "Select a variable",
-    ["All"] + csv_columns
-)
+selected_column = st.selectbox("Select a variable to plot", ["All"] + plot_columns)
 
 # Make a month column for the slider
 df["month"] = df["date"].dt.to_period("M").astype(str)
@@ -77,14 +86,14 @@ filtered_df = df[
     (df["month"] <= end_month)
 ].copy()
 
-# Columns to plot (numeric only)
-plot_columns = [
-    "fill_level",
-    "capacity_TWh",
-    "stored_energy_TWh",
-    "fill_level_previous_week",
-    "change_in_fill_level",
-]
+if filtered_df.empty:
+    st.warning("No data in selected range.")
+    st.stop()
+
+normalize = False
+if selected_column == "All":
+    normalize = st.checkbox("Normalise (0–1 scale)", value=True)
+
 
 # Plot one selected column
 if selected_column != "All":
