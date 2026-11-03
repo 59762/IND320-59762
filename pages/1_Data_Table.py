@@ -33,27 +33,37 @@ def load_nve_data():
     return df
 
 df = load_nve_data()
+n_total = len(df)
 
 area_types = sorted(df["area_type"].dropna().unique().tolist()) if "area_type" in df.columns else []
-if area_types:
+
+col_type, col_nr = st.columns([2, 1])
+with col_type:
     selected_area = st.radio(
         "Select area type",
         options=area_types,
         horizontal=True,
         help="EL = electricity bidding zones, NO = Norway total, VASS = water catchment areas",
     )
-    df = df[df["area_type"] == selected_area].copy()
-else:
-    df = df.copy()
+df = df[df["area_type"] == selected_area].copy()
 
-st.caption(f"Loaded **{len(df):,}** rows from NVE API · Showing **{len(df):,}** rows for selected area type.")
+# Each area number is its own reservoir series, so show one area at a time
+area_numbers = sorted(df["area_nr"].dropna().astype(int).unique().tolist())
+with col_nr:
+    selected_nr = st.selectbox("Select area number", options=area_numbers)
+df = df[df["area_nr"] == selected_nr].copy().reset_index(drop=True)
 
-st.subheader("Raw data – first 30 rows")
+st.caption(
+    f"Loaded **{n_total:,}** rows from NVE API · Showing **{len(df):,}** rows for selected area type."
+    f"for area **{selected_area} {selected_nr}**."
+)
+
+st.subheader(f"Raw data – first 30 rows ({selected_area} {selected_nr})")
 st.dataframe(df.head(30), use_container_width=True, hide_index=True)
 
 st.divider()
 
-st.subheader("First month summary – one row per column")
+st.subheader(f"First month summary – one row per column ({selected_area} {selected_nr})")
 
 # Filter to the first calendar month (January 1995 = 4 weekly rows)
 first_month_period = df["date"].dt.to_period("M").iloc[0]
