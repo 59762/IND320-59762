@@ -1,6 +1,8 @@
 streamlit>=1.38
 pandas>=2.2
 matplotlib>=3.8
+
+# Part 2 additions
 plotly>=5.22
 requests>=2.32
 pyspark==3.5.1
@@ -10,3 +12,10 @@ python-dotenv
 python-dateutil>=2.8
 numpy
 jupyter
+
+# Part 3 additions
+geopandas>=0.14
+shapely>=2.0
+scipy>=1.12
+statsmodels>=0.14
+scikit-learn>=1.4
