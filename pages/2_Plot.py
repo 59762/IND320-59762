@@ -48,10 +48,18 @@ if df.empty:
     st.warning("No data returned for the selected year range.")
     st.stop()
 
-if "area_type" in df.columns:
-    area_types = sorted(df["area_type"].dropna().unique().tolist())
+area_types = sorted(df["area_type"].dropna().unique().tolist())
+col_type, col_nr = st.columns([2, 1])
+with col_type:
     selected_area = st.radio("Area type", area_types, horizontal=True)
-    df = df[df["area_type"] == selected_area].copy()
+df = df[df["area_type"] == selected_area].copy()
+
+# Each area number is its own reservoir series, so plot one area at a time
+area_numbers = sorted(df["area_nr"].dropna().astype(int).unique().tolist())
+with col_nr:
+    selected_nr = st.selectbox("Area number", area_numbers)
+df = df[df["area_nr"] == selected_nr].copy()
+area_label = f"{selected_area} {selected_nr}"
 
 # Sort by date
 df = df.sort_values(["date"])
@@ -92,7 +100,13 @@ if filtered_df.empty:
 
 normalize = False
 if selected_column == "All":
-    normalize = st.checkbox("Normalise (0–1 scale)", value=True)
+    normalize = st.checkbox(
+        "Normalize (0–1 scale)", 
+        value=True,
+        key="normalize_all",
+        help="Min-max scaling per variable. Untick to see the raw values on one axis "
+             "(fill level is 0–1 while capacity and stored energy are in TWh).", 
+    )
 
 
 # Plot one selected column
@@ -117,7 +131,7 @@ if selected_column != "All":
         ax.set_xlabel("Date")
         ax.set_ylabel("Number of observations")
 
-    ax.set_title(f"{selected_column} – {start_month} to {end_month}")
+    ax.set_title(f"{selected_column} – {area_label} – {start_month} to {end_month}")
     ax.grid(True)
     plt.xticks(rotation=45)
     plt.tight_layout()
@@ -127,24 +141,25 @@ if selected_column != "All":
 else:
     all_data = (
         filtered_df
-        .groupby("date")[plot_columns]
+        .groupby("date")[["date"] + plot_columns]
         .mean()
-        .reset_index()
+        .reset_index(drop=True)
     )
 
     normalized_df = all_data.copy()
 
-    # Normalize the columns from 0 to 1
-    for column in plot_columns:
-        minimum = all_data[column].min()
-        maximum = all_data[column].max()
+    if normalize:
+        # Normalize the columns from 0 to 1
+        for column in plot_columns:
+            minimum = all_data[column].min()
+            maximum = all_data[column].max()
 
-        if maximum != minimum:
-            normalized_df[column] = (
-                all_data[column] - minimum
-            ) / (maximum - minimum)
-        else:
-            normalized_df[column] = 0
+            if maximum != minimum:
+                normalized_df[column] = (
+                    all_data[column] - minimum
+                ) / (maximum - minimum)
+            else:
+                normalized_df[column] = 0
 
     fig, ax = plt.subplots(figsize=(10, 5))
 
@@ -155,9 +170,9 @@ else:
             label=column
         )
 
-    ax.set_title(f"All reservoir variables – {start_month} to {end_month}")
+    ax.set_title(f"All reservoir variables – {area_label} – {start_month} to {end_month}")
     ax.set_xlabel("Date")
-    ax.set_ylabel("Normalized value (0-1)")
+    ax.set_ylabel("Normalized value (0-1)" if normalize else "Value (mixed units)")
     ax.grid(True)
     ax.legend()
 

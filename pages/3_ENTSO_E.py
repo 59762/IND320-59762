@@ -5,18 +5,21 @@ import matplotlib.dates as mdates
 import requests
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+from pymongo import MongoClient
 
 st.set_page_config(page_title="ENTSO-E Cross-Border Flows", page_icon="⚡", layout="wide")
 st.title("⚡ Cross-Border Electricity Transfer – ENTSO-E")
 
 # Credentials 
 try:
-    ENTSOE_TOKEN = st.secrets["entsoe_token"]
+    MONGODB_URI = st.secrets["mongodb_uri"]  # stored in Streamlit secrets
 except Exception:
-    st.error("ENTSO-E token not found in secrets. Add `entsoe_token` to your secrets.")
+    st.error("MongoDB connection string not found in secrets. Add `mongodb_uri` to your secrets.")
     st.stop()
 
-ENTSOE_API = "https://web-api.tp.entsoe.eu/api"
+DB_NAME = "ind320"
+YEARLY_COLLECTION = "entsoe_yearly"   # one document per corridor + direction + year
+HOURLY_COLLECTION = "entsoe_hourly"   # one document per corridor + direction + hour
 
 # Bidding zones: code -> (EIC code, country name) 
 ZONES = {
@@ -59,99 +62,62 @@ def corridor_title(corridor: str) -> str:
     return f"{ZONES[no_zone][1]} - {ZONES[foreign_zone][1]}"
 
 
-# ENTSO-E parsing / fetching 
-def parse_entsoe_xml(xml_text: str) -> list[dict]:
-    """Parse ENTSO-E physical flow XML into dicts (MW + interval length in hours)."""
-    if not xml_text:
-        return []
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        return []
-
-    ns = root.tag[1:root.tag.index("}")] if root.tag.startswith("{") else ""
-    q = (lambda name: f"{{{ns}}}{name}") if ns else (lambda name: name)
-
-    records = []
-    for ts_elem in root.iter(q("TimeSeries")):
-        for period in ts_elem.iter(q("Period")):
-            ti = period.find(q("timeInterval"))
-            start_str = ti.findtext(q("start")) if ti is not None else None
-            res_elem = period.find(q("resolution"))
-            res_str = res_elem.text if res_elem is not None else "PT60M"
-            if not start_str:
-                continue
-            try:
-                t0 = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            delta = timedelta(hours=1) if res_str == "PT60M" else timedelta(minutes=15)
-            for pt in period.iter(q("Point")):
-                pos_el = pt.find(q("position"))
-                qty_el = pt.find(q("quantity"))
-                if pos_el is not None and qty_el is not None:
-                    try:
-                        ts = t0 + (int(pos_el.text) - 1) * delta
-                        records.append({
-                            "timestamp": ts.replace(tzinfo=None),
-                            "value_MW": float(qty_el.text),
-                            "hours": delta.total_seconds() / 3600,
-                        })
-                    except (ValueError, TypeError):
-                        continue
-    return records
+# MongoDB access (processed data written by notebook_2.ipynb)
+@st.cache_resource
+def get_db():
+    client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=10000)
+    return client[DB_NAME]
 
 
-@st.cache_data(ttl=86400, show_spinner="Fetching ENTSO-E data…")
-def fetch_entsoe(out_domain: str, in_domain: str, year: int, token: str) -> tuple[pd.DataFrame, str]:
-    """Returns (dataframe, debug_message)."""
-    params = {
-        "securityToken": token,
-        "documentType":  "A11",
-        "in_Domain":     in_domain,
-        "out_Domain":    out_domain,
-        "periodStart":   datetime(year, 1, 1).strftime("%Y%m%d%H%M"),
-        "periodEnd":     datetime(year, 12, 31, 23, 59).strftime("%Y%m%d%H%M"),
-    }
-    try:
-        r = requests.get(ENTSOE_API, params=params, timeout=60)
-        debug = f"HTTP {r.status_code} · {len(r.text)} chars"
-        if r.status_code != 200:
-            return pd.DataFrame(), f"{debug} · Response: {r.text[:300]}"
-        recs = parse_entsoe_xml(r.text)
-        if not recs:
-            try:
-                root_tag = ET.fromstring(r.text).tag
-            except Exception:
-                root_tag = "parse error"
-            return pd.DataFrame(), f"{debug} · 0 records parsed · root tag: {root_tag} · XML snippet: {r.text[:200]}"
-        df = pd.DataFrame(recs)
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        return df, f"{debug} · {len(df)} rows"
-    except Exception as exc:
-        return pd.DataFrame(), f"Exception: {exc}"
+@st.cache_data(ttl=3600, show_spinner="Reading available years from MongoDB…")
+def load_available_years() -> list[int]:
+    return sorted(int(y) for y in get_db()[YEARLY_COLLECTION].distinct("year"))
 
 
-def load_corridor(corridor: str, year: int) -> tuple[dict, list[str]]:
-    """Return {'Into Norway': df, 'Out of Norway': df} and debug messages."""
-    no_zone, foreign_zone = [z.strip() for z in corridor.split(" - ")]
-    no_eic, foreign_eic = ZONES[no_zone][0], ZONES[foreign_zone][0]
+@st.cache_data(ttl=3600, show_spinner="Reading yearly totals from MongoDB…")
+def load_yearly(corridor: str, year: int) -> pd.DataFrame:
+    """Yearly energy per direction for one connection (TWh)."""
+    docs = list(get_db()[YEARLY_COLLECTION].find(
+        {"corridor": corridor, "year": year},
+        {"_id": 0, "direction": 1, "energy_twh": 1},
+    ))
+    return pd.DataFrame(docs)
 
-    frames, msgs = {}, []
-    for label, (out_d, in_d) in {
-        "Into Norway":   (foreign_eic, no_eic),
-        "Out of Norway": (no_eic, foreign_eic),
-    }.items():
-        df, dbg = fetch_entsoe(out_d, in_d, year, ENTSOE_TOKEN)
-        frames[label] = df
-        msgs.append(f"**{label}**: {dbg}")
-    return frames, msgs
+
+@st.cache_data(ttl=3600, show_spinner="Reading hourly flows from MongoDB…")
+def load_hourly(corridor: str, year: int, months: tuple[int, ...]) -> pd.DataFrame:
+    """Hourly flow (MW, UTC) for one connection, year and set of months."""
+    if not months:
+        return pd.DataFrame()
+    docs = list(get_db()[HOURLY_COLLECTION].find(
+        {"corridor": corridor, "year": year, "month": {"$in": list(months)}},
+        {"_id": 0, "direction": 1, "month": 1, "ts": 1, "flow_mw": 1},
+    ))
+    df = pd.DataFrame(docs)
+    if not df.empty:
+        df["ts"] = pd.to_datetime(df["ts"])
+        df = df.sort_values("ts")
+    return df
+
+
+# Check the database connection / available data
+try:
+    years = load_available_years()
+except Exception as exc:
+    st.error(f"Could not read from MongoDB: {exc}")
+    st.stop()
+
+if not years:
+    st.warning(
+        f"The `{YEARLY_COLLECTION}` collection is empty. "
+        "Run `notebook_2.ipynb` to download and store the ENTSO-E data first."
+    )
+    st.stop()
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Shared controls (one year selector for BOTH charts)
 # ═════════════════════════════════════════════════════════════════════════════
-current_year = datetime.now().year
 
 corridor = st.radio("Choose a connection:", CORRIDORS, horizontal=True)
 
@@ -160,8 +126,8 @@ with ctrl_left:
     st.subheader("Annual Energy Exchange")
     year = st.selectbox(
         "Year",
-        options=list(range(current_year - 4, current_year + 1)),
-        index=4,
+        options=years,
+        index=len(years) - 1,
     )
 with ctrl_right:
     st.subheader("Monthly Flow Profile")
@@ -172,8 +138,8 @@ with ctrl_right:
         default=["Jan"],
     )
 
-frames, debug_msgs = load_corridor(corridor, year)
-has_data = any(not f.empty for f in frames.values())
+yearly_df = load_yearly(corridor, year)
+has_data = not yearly_df.empty
 title_names = corridor_title(corridor)
 
 col_left, col_right = st.columns([1, 1], gap="large")
@@ -182,13 +148,11 @@ col_left, col_right = st.columns([1, 1], gap="large")
 with col_left:
     if not has_data:
         st.info("No data available for this connection/year.")
-        with st.expander("🔍 Debug info", expanded=True):
-            for m in debug_msgs:
-                st.markdown(m)
     else:
         totals = {
-            label: (df["value_MW"] * df["hours"]).sum() / 1e6  # MWh -> TWh
-            for label, df in frames.items() if not df.empty
+            label: float(yearly_df.loc[yearly_df["direction"] == label, "energy_twh"].sum())
+            for label in ["Into Norway", "Out of Norway"]
+            if (yearly_df["direction"] == label).any()
         }
         labels = list(totals.keys())
         values = list(totals.values())
@@ -226,6 +190,12 @@ with col_right:
         st.info("No data available for this connection/year.")
     else:
         month_nums = [MONTHS.index(m) + 1 for m in selected_months]
+        hourly_df = load_hourly(corridor, year, tuple(sorted(month_nums)))
+
+        frames = {}
+        for label in ["Into Norway", "Out of Norway"]:
+            d = hourly_df[hourly_df["direction"] == label] if not hourly_df.empty else hourly_df
+            frames[label] = d.rename(columns={"ts": "timestamp", "flow_mw": "value_MW"})
 
         fig_line, ax_line = plt.subplots(figsize=(9, 4.8))
         plotted = False
@@ -250,7 +220,7 @@ with col_right:
             plt.close(fig_line)
         else:
             ax_line.set_title(f"Electricity flow - {title_names} ({year})")
-            ax_line.set_xlabel("Date")
+            ax_line.set_xlabel("Date (UTC)")
             ax_line.set_ylabel("Flow (MW)")
             ax_line.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
             ax_line.grid(True, alpha=0.5)
