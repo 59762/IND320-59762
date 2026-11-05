@@ -62,7 +62,7 @@ def corridor_title(corridor: str) -> str:
     return f"{ZONES[no_zone][1]} - {ZONES[foreign_zone][1]}"
 
 
-# MongoDB access (processed data written by notebook_2.ipynb)
+# MongoDB access 
 @st.cache_resource
 def get_db():
     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=10000)
