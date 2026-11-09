@@ -1,13 +1,3 @@
-"""
-pages/5_Outliers.py
-IND320 – Part 3 – Data Quality
-Tab 1: Precipitation outlier detection (DCT high-pass + SPC control bounds)
-Tab 2: Temperature anomaly detection (Local Outlier Factor)
-
-Weather data (hourly ERA5) is downloaded on-demand from Open-Meteo for the
-selected electricity area.  Results are cached for 6 hours.
-"""
-
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -21,14 +11,8 @@ import streamlit as st
 from scipy.fft import dct, idct
 from sklearn.neighbors import LocalOutlierFactor
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Page config
-# ─────────────────────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Outlier & Anomaly Detection",
-    page_icon="🔍",
-    layout="wide",
-)
+st.set_page_config(page_title="Outlier & Anomaly Detection", page_icon="🔍", layout="wide",)
 st.title("🔍 Outlier & Anomaly Detection")
 st.caption(
     "Precipitation outlier detection using DCT + SPC, and temperature anomaly "
@@ -36,9 +20,7 @@ st.caption(
     "Weather data: Open-Meteo ERA5 reanalysis."
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Constants
-# ─────────────────────────────────────────────────────────────────────────────
 OPENMETEO_URL = "https://archive-api.open-meteo.com/v1/era5"
 
 AREA_NAMES = {
@@ -68,10 +50,7 @@ AREA_CENTRE = {
     5: (  6.0,   61.2),
 }
 
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Weather data loading
-# ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=21600, show_spinner="Downloading ERA5 weather data from Open-Meteo…")
 def load_weather(area_nr: int, year: int, n_locations: int = 20) -> pd.DataFrame:
     """Download hourly ERA5 precipitation and temperature for an electricity area.
@@ -136,9 +115,7 @@ def load_weather(area_nr: int, year: int, n_locations: int = 20) -> pd.DataFrame
     return df_mean
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Analysis functions
-# ─────────────────────────────────────────────────────────────────────────────
 
 def dct_spc_outliers(
     df: pd.DataFrame,
@@ -261,52 +238,24 @@ def lof_temperature_anomalies(
     plt.tight_layout()
     return fig, summary
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Sidebar controls
-# ─────────────────────────────────────────────────────────────────────────────
-st.sidebar.header("⚙️ Settings")
-
-area_nr = st.sidebar.selectbox(
+area_nr = st.selectbox(
     "Electricity area",
     options=list(AREA_NAMES.keys()),
     format_func=lambda x: AREA_NAMES[x],
     index=2,   # NO3 default
 )
 
-year = st.sidebar.number_input(
-    "Year", min_value=1990, max_value=2025, value=2024, step=1
+
+year = st.selectbox(
+    "Year", options=list(range(1990, 2026)), index=34  # 2024 default
 )
 
-n_locations = st.sidebar.slider(
+n_locations = st.slider(
     "Locations to average (ERA5)", min_value=1, max_value=100, value=20,
     help="More locations = better regional estimate but slower download."
 )
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("SPC / DCT parameters")
-freq_cutoff = st.sidebar.slider(
-    "DCT freq. cutoff", min_value=0.01, max_value=0.15, value=0.03, step=0.01,
-    help="Fraction of low-frequency DCT coefficients removed (seasonal baseline)."
-)
-n_std = st.sidebar.slider(
-    "SPC width (σ)", min_value=1.0, max_value=5.0, value=3.0, step=0.5
-)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("LOF parameters")
-outlier_fraction = st.sidebar.slider(
-    "Outlier fraction", min_value=0.005, max_value=0.10, value=0.01, step=0.005,
-    format="%.3f",
-    help="Expected proportion of anomalous days."
-)
-n_neighbors = st.sidebar.slider(
-    "LOF n_neighbors", min_value=5, max_value=50, value=20, step=5
-)
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Load weather data
-# ─────────────────────────────────────────────────────────────────────────────
 try:
     df_weather = load_weather(area_nr, year, n_locations=n_locations)
     st.success(
@@ -318,13 +267,11 @@ except Exception as e:
     st.error(f"Weather data unavailable: {e}")
     st.stop()
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Tabs
-# ─────────────────────────────────────────────────────────────────────────────
 tab_spc, tab_lof = st.tabs(["🌧 Precipitation Outliers (SPC)", "🌡 Temperature Anomalies (LOF)"])
 
 
-# ── Tab 1: Precipitation SPC ──────────────────────────────────────────────────
+# Tab 1: Precipitation SPC 
 with tab_spc:
     st.subheader("Precipitation – DCT High-Pass Filter + SPC Control Limits")
     st.markdown(
@@ -338,6 +285,15 @@ with tab_spc:
            where `MAD_scaled = MAD × 1.4826 ≈ σ` (unaffected by outliers themselves).
         4. Flag days outside the control band as **outliers** (shown in red).
         """
+    )
+
+    st.subheader("SPC / DCT parameters")
+    freq_cutoff = st.slider(
+        "DCT freq. cutoff", min_value=0.01, max_value=0.15, value=0.03, step=0.01,
+        help="Fraction of low-frequency DCT coefficients removed (seasonal baseline)."
+    )
+    n_std = st.slider(
+        "SPC width (σ)", min_value=1.0, max_value=5.0, value=3.0, step=0.5
     )
 
     with st.spinner("Running DCT + SPC analysis…"):
@@ -367,7 +323,7 @@ with tab_spc:
             st.error(f"Analysis failed: {e}")
 
 
-# ── Tab 2: Temperature LOF ────────────────────────────────────────────────────
+# Tab 2: Temperature LOF 
 with tab_lof:
     st.subheader("Temperature – Local Outlier Factor (LOF) Anomaly Detection")
     st.markdown(
@@ -380,6 +336,15 @@ with tab_lof:
         - **Upper panel:** daily mean temperature with anomaly days in red.
         - **Lower panel:** LOF score for each day (higher = more anomalous).
         """
+    )
+
+    outlier_fraction = st.slider(
+        "Outlier fraction", min_value=0.005, max_value=0.10, value=0.01, step=0.005,
+        format="%.3f",
+        help="Expected proportion of anomalous days."
+    )
+    n_neighbors = st.slider(
+        "LOF n_neighbors", min_value=5, max_value=50, value=20, step=5
     )
 
     with st.spinner("Running LOF anomaly detection…"):
@@ -409,9 +374,7 @@ with tab_lof:
         except Exception as e:
             st.error(f"Analysis failed: {e}")
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Data source
-# ─────────────────────────────────────────────────────────────────────────────
 with st.expander("📄 Data source"):
     st.markdown(
         f"""

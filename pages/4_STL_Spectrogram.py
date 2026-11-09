@@ -11,23 +11,15 @@ import streamlit as st
 from scipy.signal import spectrogram as stft_spectrogram
 from statsmodels.tsa.seasonal import STL
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Page config
-# ─────────────────────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="STL & Spectrogram",
-    page_icon="📈",
-    layout="wide",
-)
+
+st.set_page_config(page_title="STL & Spectrogram", page_icon="📈", layout="wide",)
 st.title("📈 STL Decomposition & Spectrogram")
 st.caption(
     "Seasonal-Trend decomposition using LOESS (STL) and Short-Time "
     "Fourier Transform spectrogram of Norwegian reservoir fill-percentage data."
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Data loading (shared with other pages)
-# ─────────────────────────────────────────────────────────────────────────────
+# Data loading 
 NVE_API = "https://biapi.nve.no/magasinstatistikk/api/Magasinstatistikk"
 
 AREA_NAMES = {
@@ -49,7 +41,6 @@ RENAME_MAP = {
     "endring_fyllingsgrad":     "change_fill_pct",
 }
 
-
 @st.cache_data(ttl=3600, show_spinner="Loading NVE reservoir data…")
 def load_nve_data() -> pd.DataFrame:
     """Fetch and cache the full NVE Magasinstatistikk dataset."""
@@ -66,44 +57,21 @@ def load_nve_data() -> pd.DataFrame:
 def get_fill_series(df: pd.DataFrame, area_nr: int) -> pd.Series:
     """Extract the weekly fill-percentage series for a single electricity area."""
     mask = (df["area_type"] == "EL") & (df["area_nr"] == area_nr)
-    s = (
+    return (
         df.loc[mask]
         .set_index("date")["fill_percentage"]
         .resample("W").mean()
         .interpolate(method="linear")
     )
-    return s
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Sidebar controls (shared across both tabs)
-# ─────────────────────────────────────────────────────────────────────────────
-st.sidebar.header("⚙️ Settings")
-
-area_nr = st.sidebar.selectbox(
+area_nr = st.radio(
     "Electricity area",
     options=list(AREA_NAMES.keys()),
     format_func=lambda x: AREA_NAMES[x],
     index=2,   # default NO3
 )
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("STL parameters")
-stl_period   = st.sidebar.number_input("Period (weeks)", min_value=4, max_value=104, value=52, step=1)
-stl_seasonal = st.sidebar.slider("Seasonal smoother", min_value=3, max_value=51, value=13, step=2,
-                                  help="Must be odd; larger = smoother seasonal component")
-stl_robust   = st.sidebar.checkbox("Robust fitting", value=True,
-                                    help="Reduces influence of outliers on trend estimation")
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("Spectrogram parameters")
-spec_window  = st.sidebar.slider("Window length (weeks)", min_value=26, max_value=260, value=104, step=2)
-spec_overlap = st.sidebar.slider("Overlap (weeks)", min_value=0, max_value=spec_window - 1,
-                                  value=int(spec_window * 0.75))
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Load data
-# ─────────────────────────────────────────────────────────────────────────────
 try:
     df_nve = load_nve_data()
     fill_series = get_fill_series(df_nve, area_nr)
@@ -123,13 +91,11 @@ st.info(
     f"{clean.index[0].date()} → {clean.index[-1].date()}"
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Tabs
-# ─────────────────────────────────────────────────────────────────────────────
 tab_stl, tab_spec = st.tabs(["📉 STL Decomposition", "🔊 Spectrogram"])
 
 
-# ── Tab 1: STL ────────────────────────────────────────────────────────────────
+# Tab 1: STL
 with tab_stl:
     st.subheader("Seasonal-Trend Decomposition using LOESS (STL)")
     st.markdown(
@@ -143,6 +109,18 @@ with tab_stl:
         A flat residual suggests the model explains most variation.
         """
     )
+
+    stl_period   = st.number_input("Period (weeks)", min_value=4, max_value=104, value=52, step=1)
+
+    stl_seasonal = st.slider("Seasonal smoother", min_value=3, max_value=51, value=13, step=2,
+                                  help="Must be odd; larger = smoother seasonal component")
+    
+    stl_trend = st.slider("Trend smoother", min_value=53, max_value=201,
+                          value=105, step=2, key="stl_trend",
+                          help="Must be odd and larger than the period")
+
+    stl_robust   = st.checkbox("Robust fitting", value=True,
+                                    help="Reduces influence of outliers on trend estimation")
 
     with st.spinner("Running STL decomposition…"):
         try:
@@ -189,7 +167,7 @@ with tab_stl:
             st.error(f"STL failed: {e}")
 
 
-# ── Tab 2: Spectrogram ────────────────────────────────────────────────────────
+# Tab 2: Spectrogram 
 with tab_spec:
     st.subheader("Power Spectrogram (STFT)")
     st.markdown(
@@ -203,6 +181,13 @@ with tab_spec:
         filling cycle.  Bands at higher frequencies indicate shorter-period fluctuations.
         """
     )
+
+    ctrl_left, ctrl_right = st.columns([1, 2], gap="large")
+    with ctrl_left:
+        spec_window  = st.slider("Window length (weeks)", min_value=26, max_value=260, value=104, step=2)
+    with ctrl_right:
+        spec_overlap = st.slider("Overlap (weeks)", min_value=0, max_value=spec_window - 1,
+                                  value=int(spec_window * 0.75))
 
     with st.spinner("Computing spectrogram…"):
         try:
@@ -248,9 +233,7 @@ with tab_spec:
         except Exception as e:
             st.error(f"Spectrogram failed: {e}")
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Data source
-# ─────────────────────────────────────────────────────────────────────────────
 with st.expander("📄 Data source"):
     st.markdown(
         """
