@@ -20,6 +20,8 @@ st.caption(
     "Weather data: Open-Meteo ERA5 reanalysis."
 )
 
+NVE_BASE = "https://biapi.nve.no/magasinstatistikk/api/Magasinstatistikk"
+
 # Constants
 OPENMETEO_URL = "https://archive-api.open-meteo.com/v1/era5"
 
@@ -113,6 +115,67 @@ def load_weather(area_nr: int, year: int, n_locations: int = 20) -> pd.DataFrame
     df_mean = pd.concat(all_dfs).groupby(level=0).mean()
     df_mean.index.name = "datetime"
     return df_mean
+
+
+@st.cache_data(ttl=3600, show_spinner="Loading NVE area list…")
+def load_nve_areas() -> pd.DataFrame:
+    """Return the distinct (area_type, area_nr) pairs available in the NVE data."""
+    r = requests.get(f"{NVE_BASE}/HentOffentligData", timeout=30)
+    r.raise_for_status()
+    df = pd.DataFrame(r.json())
+    df = df.rename(columns={"omrType": "area_type", "omrnr": "area_nr"})
+    return df[["area_type", "area_nr"]].dropna().drop_duplicates().reset_index(drop=True)
+
+try:
+    areas = load_nve_areas()
+except Exception as e:
+    st.warning(f"Could not load NVE data: {e}")
+    st.stop()
+
+# Area selection 
+area_types = sorted(areas["area_type"].dropna().unique().tolist())
+col_type, col_nr = st.columns([2, 1])
+with col_type:
+    area_type = st.radio(
+        "Area type",
+        area_types,
+        #index=area_types.index("EL") if "EL" in area_types else 0,
+        horizontal=True,
+        help="EL = electricity bidding zones, NO = Norway total, VASS = water catchment areas",
+    )
+areas = areas[areas["area_type"] == area_type].copy()
+area_numbers = sorted(
+    areas.loc[areas["area_type"] == area_type, "area_nr"].dropna().astype(int).unique().tolist()
+)
+with col_nr:
+    area_nr = st.selectbox(
+        "Area number",
+        area_numbers,
+        #index=area_numbers.index(3) if area_type == "EL" and 3 in area_numbers else 0,  
+    )
+areas = areas[areas["area_nr"] == area_nr].copy()
+area_label = f"{area_type}{area_nr}"
+
+year = st.selectbox(
+    "Year", options=list(range(1990, 2026)), index=34  # 2024 default
+)
+
+n_locations = st.slider(
+    "Locations to average (ERA5)", min_value=1, max_value=100, value=20,
+    help="More locations = better regional estimate but slower download."
+)
+
+# Load weather data
+try:
+    df_weather = load_weather(area_nr, year, n_locations=n_locations)
+    st.success(
+        f"**{area_type}{area_nr}**, {year} — "
+        f"{len(df_weather)} hourly observations loaded "
+        f"(mean of {n_locations} ERA5 locations)."
+    )
+except Exception as e:
+    st.error(f"Weather data unavailable: {e}")
+    st.stop()
 
 
 # Analysis functions
@@ -238,34 +301,6 @@ def lof_temperature_anomalies(
     plt.tight_layout()
     return fig, summary
 
-area_nr = st.selectbox(
-    "Electricity area",
-    options=list(AREA_NAMES.keys()),
-    format_func=lambda x: AREA_NAMES[x],
-    index=2,   # NO3 default
-)
-
-
-year = st.selectbox(
-    "Year", options=list(range(1990, 2026)), index=34  # 2024 default
-)
-
-n_locations = st.slider(
-    "Locations to average (ERA5)", min_value=1, max_value=100, value=20,
-    help="More locations = better regional estimate but slower download."
-)
-
-# Load weather data
-try:
-    df_weather = load_weather(area_nr, year, n_locations=n_locations)
-    st.success(
-        f"**{AREA_NAMES[area_nr]}**, {year} — "
-        f"{len(df_weather)} hourly observations loaded "
-        f"(mean of {n_locations} ERA5 locations)."
-    )
-except Exception as e:
-    st.error(f"Weather data unavailable: {e}")
-    st.stop()
 
 # Tabs
 tab_spc, tab_lof = st.tabs(["🌧 Precipitation Outliers (SPC)", "🌡 Temperature Anomalies (LOF)"])
@@ -273,21 +308,7 @@ tab_spc, tab_lof = st.tabs(["🌧 Precipitation Outliers (SPC)", "🌡 Temperatu
 
 # Tab 1: Precipitation SPC 
 with tab_spc:
-    st.subheader("Precipitation – DCT High-Pass Filter + SPC Control Limits")
-    st.markdown(
-        """
-        **Method:**
-        1. Resample hourly precipitation to daily mean.
-        2. Apply **Discrete Cosine Transform (DCT-II)**.
-           Zero out the lowest `freq_cutoff` fraction of coefficients (seasonal baseline).
-           Invert (IDCT) → *Seasonally Adjusted Variation* (**SATV**).
-        3. Compute **robust SPC limits**: `median ± n_std × MAD_scaled`
-           where `MAD_scaled = MAD × 1.4826 ≈ σ` (unaffected by outliers themselves).
-        4. Flag days outside the control band as **outliers** (shown in red).
-        """
-    )
 
-    st.subheader("SPC / DCT parameters")
     freq_cutoff = st.slider(
         "DCT freq. cutoff", min_value=0.01, max_value=0.15, value=0.03, step=0.01,
         help="Fraction of low-frequency DCT coefficients removed (seasonal baseline)."
@@ -325,18 +346,6 @@ with tab_spc:
 
 # Tab 2: Temperature LOF 
 with tab_lof:
-    st.subheader("Temperature – Local Outlier Factor (LOF) Anomaly Detection")
-    st.markdown(
-        """
-        **Method:**
-        LOF compares the local density of each data point to the densities of its
-        *k* nearest neighbours.  Points surrounded by sparse neighbourhoods (LOF >> 1)
-        are flagged as anomalies.
-
-        - **Upper panel:** daily mean temperature with anomaly days in red.
-        - **Lower panel:** LOF score for each day (higher = more anomalous).
-        """
-    )
 
     outlier_fraction = st.slider(
         "Outlier fraction", min_value=0.005, max_value=0.10, value=0.01, step=0.005,

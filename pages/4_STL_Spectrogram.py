@@ -22,41 +22,70 @@ st.caption(
 # Data loading 
 NVE_API = "https://biapi.nve.no/magasinstatistikk/api/Magasinstatistikk"
 
-AREA_NAMES = {
-    1: "NO1 – Eastern Norway",
-    2: "NO2 – South-western Norway",
-    3: "NO3 – Central Norway",
-    4: "NO4 – Northern Norway",
-    5: "NO5 – Western Norway",
-}
-
-RENAME_MAP = {
-    "dato_Id":                  "date",
-    "omrType":                  "area_type",
-    "omrnr":                    "area_nr",
-    "fyllingsgrad":             "fill_percentage",
-    "kapasitet_TWh":            "capacity_TWh",
-    "fylling_TWh":              "fill_TWh",
-    "fyllingsgrad_forrige_uke": "prev_week_fill_pct",
-    "endring_fyllingsgrad":     "change_fill_pct",
-}
-
 @st.cache_data(ttl=3600, show_spinner="Loading NVE reservoir data…")
 def load_nve_data() -> pd.DataFrame:
-    """Fetch and cache the full NVE Magasinstatistikk dataset."""
+    #Fetch and cache the full NVE Magasinstatistikk dataset.
     r = requests.get(f"{NVE_API}/HentOffentligData", timeout=30)
     r.raise_for_status()
     df = pd.DataFrame(r.json())
+
+    RENAME_MAP = {
+        "dato_Id":                  "date",
+        "omrType":                  "area_type",
+        "omrnr":                    "area_nr",
+        "fyllingsgrad":             "fill_percentage",
+        "kapasitet_TWh":            "capacity_TWh",
+        "fylling_TWh":              "fill_TWh",
+        "fyllingsgrad_forrige_uke": "prev_week_fill_pct",
+        "endring_fyllingsgrad":     "change_fill_pct",
+    }
+
     df = df.rename(columns={k: v for k, v in RENAME_MAP.items() if k in df.columns})
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    
     df.sort_values("date", inplace=True)
     df.reset_index(drop=True, inplace=True)
+    
     return df
 
+df = load_nve_data()
 
-def get_fill_series(df: pd.DataFrame, area_nr: int) -> pd.Series:
-    """Extract the weekly fill-percentage series for a single electricity area."""
-    mask = (df["area_type"] == "EL") & (df["area_nr"] == area_nr)
+# Load data
+try:
+    df_nve = load_nve_data()
+except Exception as e:
+    st.error(f"Could not load NVE data: {e}")
+    st.stop()
+
+if df.empty:
+    st.warning("No data returned for the selected year range.")
+    st.stop()
+
+# Area selection 
+area_types = sorted(df_nve["area_type"].dropna().unique().tolist())
+col_type, col_nr = st.columns([2, 1])
+with col_type:
+    area_type = st.radio(
+        "Area type",
+        area_types,
+        index=area_types.index("EL") if "EL" in area_types else 0,
+        horizontal=True,
+        help="EL = electricity bidding zones, NO = Norway total, VASS = water catchment areas",
+    )
+area_numbers = sorted(
+    df_nve.loc[df_nve["area_type"] == area_type, "area_nr"].dropna().astype(int).unique().tolist()
+)
+with col_nr:
+    area_nr = st.selectbox(
+        "Area number",
+        area_numbers,
+        index=area_numbers.index(3) if area_type == "EL" and 3 in area_numbers else 0,  
+    )
+
+
+def get_fill_series(df: pd.DataFrame, area_type: str, area_nr: int) -> pd.Series:
+    #Extract the weekly fill-percentage series for a single electricity area.
+    mask = (df["area_type"] == area_type) & (df["area_nr"] == area_nr)
     return (
         df.loc[mask]
         .set_index("date")["fill_percentage"]
@@ -64,60 +93,35 @@ def get_fill_series(df: pd.DataFrame, area_nr: int) -> pd.Series:
         .interpolate(method="linear")
     )
 
-area_nr = st.radio(
-    "Electricity area",
-    options=list(AREA_NAMES.keys()),
-    format_func=lambda x: AREA_NAMES[x],
-    index=2,   # default NO3
-)
-
-# Load data
 try:
-    df_nve = load_nve_data()
-    fill_series = get_fill_series(df_nve, area_nr)
+    fill_series = get_fill_series(df_nve, area_type, area_nr)
 except Exception as e:
-    st.error(f"Could not load NVE data: {e}")
+    st.error(f"Could not build series: {e}")
     st.stop()
 
 if fill_series.empty or fill_series.dropna().empty:
-    st.warning(f"No fill-percentage data found for area {area_nr}.")
+    st.warning(f"No fill-percentage data found for {area_type} {area_nr}.")
     st.stop()
 
 clean = fill_series.dropna()
 
-st.info(
-    f"**{AREA_NAMES[area_nr]}** – "
-    f"{len(clean)} weekly observations, "
-    f"{clean.index[0].date()} → {clean.index[-1].date()}"
-)
 
 # Tabs
 tab_stl, tab_spec = st.tabs(["📉 STL Decomposition", "🔊 Spectrogram"])
 
-
 # Tab 1: STL
 with tab_stl:
-    st.subheader("Seasonal-Trend Decomposition using LOESS (STL)")
-    st.markdown(
-        """
-        STL splits the time series into three additive components:
-        - **Trend** – long-run movement in reservoir levels
-        - **Seasonal** – the annual filling-and-drawdown cycle
-        - **Residual** – remaining noise and irregular fluctuations
-
-        The seasonal component should capture the winter drawdown and spring/summer refill.
-        A flat residual suggests the model explains most variation.
-        """
-    )
 
     stl_period   = st.number_input("Period (weeks)", min_value=4, max_value=104, value=52, step=1)
 
-    stl_seasonal = st.slider("Seasonal smoother", min_value=3, max_value=51, value=13, step=2,
-                                  help="Must be odd; larger = smoother seasonal component")
-    
-    stl_trend = st.slider("Trend smoother", min_value=53, max_value=201,
-                          value=105, step=2, key="stl_trend",
-                          help="Must be odd and larger than the period")
+    ctrl_left, ctrl_right = st.columns([1, 1], gap="large")
+    with ctrl_right:
+        stl_seasonal = st.slider("Seasonal smoother", min_value=3, max_value=51, value=13, step=2,
+                                    help="Must be odd; larger = smoother seasonal component")
+    with ctrl_left:
+        stl_trend = st.slider("Trend smoother", min_value=53, max_value=201,
+                              value=105, step=2, key="stl_trend",
+                              help="Must be odd and larger than the period")
 
     stl_robust   = st.checkbox("Robust fitting", value=True,
                                     help="Reduces influence of outliers on trend estimation")
@@ -147,7 +151,7 @@ with tab_stl:
                 if label == "Residual":
                     ax.axhline(0, color="grey", linewidth=0.7, linestyle="--")
             axes[0].set_title(
-                f"STL Decomposition – {AREA_NAMES[area_nr]} Fill Percentage (%)\n"
+                f"STL Decomposition –  Fill Percentage (%)\n"
                 f"period={stl_period}, seasonal={seasonal}, robust={stl_robust}",
                 fontsize=12,
             )
@@ -169,20 +173,8 @@ with tab_stl:
 
 # Tab 2: Spectrogram 
 with tab_spec:
-    st.subheader("Power Spectrogram (STFT)")
-    st.markdown(
-        """
-        A spectrogram shows how the frequency content of the signal evolves over time.
-        - The **x-axis** is time (years from start of series).
-        - The **y-axis** is frequency in cycles per year.
-        - **Colour** (dark → bright) encodes power in dB.
 
-        The strong horizontal band at **1 cycle/year** reflects the predictable annual
-        filling cycle.  Bands at higher frequencies indicate shorter-period fluctuations.
-        """
-    )
-
-    ctrl_left, ctrl_right = st.columns([1, 2], gap="large")
+    ctrl_left, ctrl_right = st.columns([1, 1], gap="large")
     with ctrl_left:
         spec_window  = st.slider("Window length (weeks)", min_value=26, max_value=260, value=104, step=2)
     with ctrl_right:
@@ -221,7 +213,7 @@ with tab_spec:
             ax.set_xlabel("Time from series start (years)")
             ax.set_ylabel("Frequency (cycles per year)")
             ax.set_title(
-                f"Spectrogram – {AREA_NAMES[area_nr]} Fill Percentage\n"
+                f"Spectrogram –  Fill Percentage\n"
                 f"window={spec_window} weeks, overlap={noverlap} weeks",
                 fontsize=12,
             )
