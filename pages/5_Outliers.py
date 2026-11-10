@@ -55,21 +55,7 @@ AREA_CENTRE = {
 # Weather data loading
 @st.cache_data(ttl=21600, show_spinner="Downloading ERA5 weather data from Open-Meteo…")
 def load_weather(area_nr: int, year: int, n_locations: int = 20) -> pd.DataFrame:
-    """Download hourly ERA5 precipitation and temperature for an electricity area.
 
-    For interactive use we limit to `n_locations` sample points so the call
-    returns quickly (< 30 s for 20 locations).
-
-    Parameters
-    ----------
-    area_nr : int   NVE electricity area number (1–5).
-    year : int      Calendar year to fetch.
-    n_locations : int  Number of random locations to average.  Default 20.
-
-    Returns
-    -------
-    pd.DataFrame with DatetimeIndex and columns: precipitation, temperature_2m
-    """
     start_date = f"{year}-01-01"
     end_date   = f"{year}-12-31"
 
@@ -165,14 +151,49 @@ n_locations = st.slider(
     help="More locations = better regional estimate but slower download."
 )
 
+#n_points = st.select_slider(
+#    "Random points in the area",
+#    options=[50, 100, 200, 500, 1000],
+#    value=100,
+#    help="Number of random points to sample in the area for averaging. More points = better estimate but slower download.",
+#)
+
+
+# Download only when the button is pressed. The result is kept in st.session_state, so
+# changing a slider in the tabs below does not trigger a new download.
+if st.button("Load weather data"):
+        try:
+            df_loaded = load_weather(area_nr, year, n_locations=int(n_locations))
+            st.session_state["weather"] = {
+                "df": df_loaded, "area_type": area_type, "area_nr": area_nr,
+                "year": year, "n": int(n_locations),
+            }
+        except Exception as e:
+            st.session_state.pop("weather", None)
+            st.error(f"Weather data unavailable: {e}")
+
+if "weather" not in st.session_state:
+    st.info("Choose an area, year, and number of locations,"
+            "then click **Load weather data**.")
+    st.stop()
+
+loaded = st.session_state["weather"]
+df_weather = loaded["df"]
+st.success(
+    f"**{loaded['area_type']}{loaded['area_nr']}**, {loaded['year']} — "
+    f"{len(df_weather)} hourly observations loaded "
+    f"(mean of {loaded['n']} ERA5 locations)."
+)
+# The loaded data keeps being analysed; tell the user if the inputs above no longer match it
+if (loaded["area_type"], loaded["area_nr"], loaded["n"]) != (area_type, area_nr, int(n_locations)) \
+        or loaded["year"] != year:
+    st.info("The selection above has changed since the data was loaded. "
+            "Click **Load weather data** to update the analysis.")
+
+
 # Load weather data
 try:
     df_weather = load_weather(area_nr, year, n_locations=n_locations)
-    st.success(
-        f"**{area_type}{area_nr}**, {year} — "
-        f"{len(df_weather)} hourly observations loaded "
-        f"(mean of {n_locations} ERA5 locations)."
-    )
 except Exception as e:
     st.error(f"Weather data unavailable: {e}")
     st.stop()
@@ -308,7 +329,7 @@ tab_spc, tab_lof = st.tabs(["🌧 Precipitation Outliers (SPC)", "🌡 Temperatu
 
 # Tab 1: Precipitation SPC 
 with tab_spc:
-
+    
     freq_cutoff = st.slider(
         "DCT freq. cutoff", min_value=0.01, max_value=0.15, value=0.03, step=0.01,
         help="Fraction of low-frequency DCT coefficients removed (seasonal baseline)."
