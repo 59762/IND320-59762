@@ -146,10 +146,10 @@ year = st.selectbox(
     "Year", options=list(range(1990, 2026)), index=34  # 2024 default
 )
 
-n_locations = st.slider(
-    "Locations to average (ERA5)", min_value=1, max_value=100, value=20,
-    help="More locations = better regional estimate but slower download."
-)
+#n_locations = st.slider(
+#    "Locations to average (ERA5)", min_value=1, max_value=100, value=20,
+#    help="More locations = better regional estimate but slower download."
+#)
 
 #n_points = st.select_slider(
 #    "Random points in the area",
@@ -163,17 +163,17 @@ n_locations = st.slider(
 # changing a slider in the tabs below does not trigger a new download.
 if st.button("Load weather data"):
         try:
-            df_loaded = load_weather(area_nr, year, n_locations=int(n_locations))
+            df_loaded = load_weather(area_nr, year, )
             st.session_state["weather"] = {
                 "df": df_loaded, "area_type": area_type, "area_nr": area_nr,
-                "year": year, "n": int(n_locations),
+                "year": year,
             }
         except Exception as e:
             st.session_state.pop("weather", None)
             st.error(f"Weather data unavailable: {e}")
 
 if "weather" not in st.session_state:
-    st.info("Choose an area, year, and number of locations,"
+    st.info("Choose an area and year, "
             "then click **Load weather data**.")
     st.stop()
 
@@ -182,10 +182,9 @@ df_weather = loaded["df"]
 st.success(
     f"**{loaded['area_type']}{loaded['area_nr']}**, {loaded['year']} — "
     f"{len(df_weather)} hourly observations loaded "
-    f"(mean of {loaded['n']} ERA5 locations)."
 )
 # The loaded data keeps being analysed; tell the user if the inputs above no longer match it
-if (loaded["area_type"], loaded["area_nr"], loaded["n"]) != (area_type, area_nr, int(n_locations)) \
+if (loaded["area_type"], loaded["area_nr"]) != (area_type, area_nr) \
         or loaded["year"] != year:
     st.info("The selection above has changed since the data was loaded. "
             "Click **Load weather data** to update the analysis.")
@@ -193,7 +192,7 @@ if (loaded["area_type"], loaded["area_nr"], loaded["n"]) != (area_type, area_nr,
 
 # Load weather data
 try:
-    df_weather = load_weather(area_nr, year, n_locations=n_locations)
+    df_weather = load_weather(area_nr, year)
 except Exception as e:
     st.error(f"Weather data unavailable: {e}")
     st.stop()
