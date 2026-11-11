@@ -121,7 +121,7 @@ if not years:
 
 corridor = st.radio("Choose a connection:", CORRIDORS, horizontal=True)
 
-ctrl_left, ctrl_right = st.columns([1, 2], gap="large")
+ctrl_left, ctrl_right = st.columns([1, 1], gap="large")
 with ctrl_left:
     st.subheader("Annual Energy Exchange")
     year = st.selectbox(
