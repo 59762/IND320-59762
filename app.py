@@ -23,6 +23,9 @@ with right:
         st.markdown("""
         ✅ Dashboard basics  
         ✅ Cross-border electricity flows (ENTSO-E)  
+        ✅ Map & selectors (price areas, water areas, weather)  
+        ✅ Sliding window correlation (weather vs reservoirs)    
+        ✅ Water magazine forecasting (SARIMAX / ML)  
         🚧 More data and analysis coming soon
         """)
 

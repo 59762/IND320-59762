@@ -20,11 +20,12 @@ with left:
     |--------|------------------|
     | **ENTSO-E Transparency Platform** | Physical electricity flows between countries |
     | **NVE Magasinstatistikk** | Norwegian reservoir levels |
+    | **Open-Meteo (ERA5)** | Weather per price / water area |
     | **MongoDB / Cassandra** | Storage for the collected data |
     """)
 
     st.markdown("### Built with")
-    st.markdown("`Python` · `Streamlit` · `Pandas` · `Matplotlib` · `MongoDB` · `Cassandra` · `GitHub`")
+    st.markdown("`Python` · `Streamlit` · `Pandas` · `Matplotlib` · `Plotly` · `statsmodels` · `scikit-learn` · `MongoDB` · `Cassandra` · `GitHub`")
 
 with right:
     with st.container(border=True):
