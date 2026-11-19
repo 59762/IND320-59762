@@ -114,13 +114,19 @@ with tab_stl:
 
     stl_period   = st.number_input("Period (weeks)", min_value=4, max_value=104, value=52, step=1)
 
+    # statsmodels needs an odd trend window that is larger than the period. The slider's
+    # lower bound follows the period, so every position of the slider is a valid value and
+    # is passed to STL unchanged (no silent override that makes the slider look dead).
+    min_trend = stl_period + 1 if stl_period % 2 == 0 else stl_period + 2
+    max_trend = max(201, min_trend + 100)
+
     ctrl_left, ctrl_right = st.columns([1, 1], gap="large")
     with ctrl_right:
         stl_seasonal = st.slider("Seasonal smoother", min_value=3, max_value=51, value=13, step=2,
                                     help="Must be odd; larger = smoother seasonal component")
     with ctrl_left:
-        stl_trend = st.slider("Trend smoother", min_value=53, max_value=201,
-                              value=105, step=2, key="stl_trend",
+        stl_trend = st.slider("Trend smoother", min_value=min_trend, max_value=max_trend,
+                              value=min(max(105, min_trend), max_trend), step=2,
                               help="Must be odd and larger than the period")
 
     stl_robust   = st.checkbox("Robust fitting", value=True,
@@ -129,10 +135,12 @@ with tab_stl:
     with st.spinner("Running STL decomposition…"):
         try:
             seasonal = stl_seasonal if stl_seasonal % 2 == 1 else stl_seasonal + 1
+
             stl_model = STL(
                 clean,
                 period=stl_period,
                 seasonal=seasonal,
+                trend=stl_trend,
                 robust=stl_robust,
             )
             result = stl_model.fit()
