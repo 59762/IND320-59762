@@ -11,19 +11,6 @@ def home_page():
         "Pick a topic below or in the sidebar menu to get started."
     )
 
-<<<<<<< HEAD
-with right:
-    with st.container(border=True):
-        st.subheader("Project status")
-        st.markdown("""
-        ✅ Dashboard basics  
-        ✅ Cross-border electricity flows (ENTSO-E)  
-        ✅ Map & selectors (price areas, water areas, weather)  
-        ✅ Sliding window correlation (weather vs reservoirs)    
-        ✅ Water magazine forecasting (SARIMAX / ML)  
-        🚧 More data and analysis coming soon
-        """)
-=======
     # Reservoirs
     st.subheader("💧 Reservoirs")
     st.caption("Weekly reservoir statistics from NVE (Magasinstatistikk).")
@@ -43,7 +30,6 @@ with right:
         "Split the fill percentage into trend, seasonal pattern and residual (STL), "
         "and see how the yearly cycle changes over time in a spectrogram.",
     )
->>>>>>> origin/main
 
     # Electricity and weather
     left, right = st.columns(2, gap="medium")
