@@ -11,6 +11,13 @@ import streamlit as st
 from scipy.fft import dct, idct
 from sklearn.neighbors import LocalOutlierFactor
 
+import re
+import zlib
+from pathlib import Path
+
+import geopandas as gpd
+import shapely
+
 # Page config
 st.set_page_config(page_title="Outlier & Anomaly Detection", page_icon="🔍", layout="wide",)
 st.title("🔍 Outlier & Anomaly Detection")
@@ -33,39 +40,76 @@ AREA_NAMES = {
     5: "NO5 – Western Norway",
 }
 
-# Approximate bounding boxes for rejection-sampling fallback
-# {area_nr: (lon_min, lon_max, lat_min, lat_max)}
-AREA_BBOX = {
-    1: ( 9.5, 13.0, 58.5, 61.0),
-    2: ( 4.8,  9.0, 57.9, 60.0),
-    3: ( 8.0, 17.5, 62.0, 65.5),
-    4: (13.5, 30.0, 65.5, 71.2),
-    5: ( 4.9,  8.8, 60.0, 62.5),
-}
+# NVE shapefiles (atlas.nve.no) 
+SHAPE_DIR = Path(__file__).resolve().parents[1] / "data" / "shapefiles"
+EL_DIR = SHAPE_DIR / "electricity_areas"    # column 'budomr' = "NO 1" ... "NO 5"
+REGION_DIR = SHAPE_DIR / "NVE_Regions"      # NVE regions: RV, RM, RN, RØ, RS
 
-# Representative centre point per area (used when API is called in demo mode)
-AREA_CENTRE = {
-    1: ( 10.75,  59.9),
-    2: (  6.5,   58.7),
-    3: ( 10.5,   63.4),
-    4: ( 17.0,   68.4),
-    5: (  6.0,   61.2),
-}
+# VASS areas are built from the NVE regions: 1 = East (RS + RØ), 2 = West (RV), 3 = North (RM + RN).
+# Assumed mapping; change here if your VASS numbers mean something else.
+VASS_WEST, VASS_NORTH = ["RV"], ["RM", "RN"]
+
+def _first_shp(folder: Path) -> Path:
+    files = sorted(folder.glob("*.shp"))
+    if not files:
+        raise FileNotFoundError(f"No shapefile found in {folder}")
+    return files[0]
+
+@st.cache_resource(show_spinner=False)
+def load_area_polygon(area_type: str, area_nr: int):
+    """Polygon (EPSG:25833, metres) of one NVE area, read from the shapefile."""
+    if area_type in ("EL", "NO"):
+        gdf = gpd.read_file(_first_shp(EL_DIR))
+        if area_type == "NO":  # all of Norway = union of the electricity areas
+            return shapely.union_all(gdf.geometry.values)
+        nr = gdf["budomr"].astype(str).str.extract(r"(\d+)")[0].astype(float)
+        sel = gdf[nr == area_nr]
+    elif area_type == "VASS":
+        gdf = gpd.read_file(_first_shp(REGION_DIR), encoding="utf-8")
+        code = gdf["REGION"]
+        masks = {
+            1: ~code.isin(VASS_WEST + VASS_NORTH),   # RS + RØ (matched by exclusion: safe with Ø encoding)
+            2: code.isin(VASS_WEST),
+            3: code.isin(VASS_NORTH),
+        }
+        if area_nr not in masks:
+            raise ValueError(f"VASS {area_nr} has no region mapping (supported: 1, 2, 3).")
+        sel = gdf[masks[area_nr]]
+    else:
+        raise ValueError(f"No shapefile configured for area type {area_type!r}.")
+    if sel.empty:
+        raise ValueError(f"No polygon for {area_type} {area_nr}.")
+    return shapely.union_all(sel.geometry.values)
+
+
+def sample_locations(area_type: str, area_nr: int, n: int, seed: int) -> list[tuple[float, float]]:
+    """n reproducible random (lon, lat) points that lie inside the NVE polygon."""
+    geom = load_area_polygon(area_type, area_nr)
+    rng = np.random.default_rng(seed)
+    minx, miny, maxx, maxy = geom.bounds
+    xs, ys = [], []
+    while len(xs) < n:  # rejection sampling inside the bounding box
+        x, y = rng.uniform(minx, maxx, 500), rng.uniform(miny, maxy, 500)
+        ok = shapely.contains_xy(geom, x, y)
+        xs += x[ok].tolist(); ys += y[ok].tolist()
+    pts = gpd.GeoSeries(gpd.points_from_xy(xs[:n], ys[:n]), crs="EPSG:25833").to_crs("EPSG:4326")
+    return [(p.x, p.y) for p in pts]
+
 
 # Weather data loading
 @st.cache_data(ttl=21600, show_spinner="Downloading ERA5 weather data from Open-Meteo…")
-def load_weather(area_nr: int, year: int, n_locations: int = 20) -> pd.DataFrame:
+def load_weather(area_type: str, area_nr: int, year: int, n_locations: int = 20) -> pd.DataFrame:
 
     start_date = f"{year}-01-01"
     end_date   = f"{year}-12-31"
 
-    rng = np.random.default_rng(seed=area_nr * 31 + year)
-    lon_min, lon_max, lat_min, lat_max = AREA_BBOX[area_nr]
-    lons = rng.uniform(lon_min, lon_max, n_locations)
-    lats = rng.uniform(lat_min, lat_max, n_locations)
+    # Points are drawn from the real NVE polygon for this area (EL = bidding zone,
+    # VASS = catchment area), not from a bounding box. Seed is fixed per selection.
+    seed = zlib.crc32(f"{area_type}-{area_nr}-{year}".encode())
+    locations = sample_locations(area_type, area_nr, n=n_locations, seed=seed)
 
     all_dfs = []
-    for lon, lat in zip(lons, lats):
+    for lon, lat in locations:
         try:
             r = requests.get(
                 OPENMETEO_URL,
@@ -163,7 +207,7 @@ year = st.selectbox(
 # changing a slider in the tabs below does not trigger a new download.
 if st.button("Load weather data"):
         try:
-            df_loaded = load_weather(area_nr, year, )
+            df_loaded = load_weather(area_type, area_nr, year)
             st.session_state["weather"] = {
                 "df": df_loaded, "area_type": area_type, "area_nr": area_nr,
                 "year": year,
@@ -183,19 +227,6 @@ st.success(
     f"**{loaded['area_type']}{loaded['area_nr']}**, {loaded['year']} — "
     f"{len(df_weather)} hourly observations loaded "
 )
-# The loaded data keeps being analysed; tell the user if the inputs above no longer match it
-if (loaded["area_type"], loaded["area_nr"]) != (area_type, area_nr) \
-        or loaded["year"] != year:
-    st.info("The selection above has changed since the data was loaded. "
-            "Click **Load weather data** to update the analysis.")
-
-
-# Load weather data
-try:
-    df_weather = load_weather(area_nr, year)
-except Exception as e:
-    st.error(f"Weather data unavailable: {e}")
-    st.stop()
 
 
 # Analysis functions
