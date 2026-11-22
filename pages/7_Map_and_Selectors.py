@@ -5,137 +5,155 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from lib import state, nve, weather
-from lib.config import (AREA_TYPES, COLOR_MODES, MAP_STYLE, RESERVOIR_VARS, SEQ_BLUE, SERIES,
-                        WEATHER_VARS, label)
-from lib.geo import area_label, area_names, is_placeholder, load_geojson
+from utils import data, geo, state
+from utils.config import (AREA_TYPES, COLOR_MODES, MAP_STYLE, MAX_WEATHER_YEARS, RESERVOIR_VARS,
+                          SELECT_COLOR, SERIES_COLORS, WEATHER_VARS)
 
 st.set_page_config(page_title="Map & Selectors", page_icon="🗺️", layout="wide")
+state.init()
+
 st.title("🗺️ Map & Selectors")
-st.caption("Colour Norway's price areas, water areas or a weather property over a chosen period. "
-           "Click an area to select it - the selection (and the period) follows you to the "
-           "correlation and forecast pages.")
+st.caption("Price areas, water areas or all of Norway, drawn from the NVE shapefiles and coloured by "
+           "reservoir filling or a weather property. Click an area to select it: the selection and the "
+           "time frame carry over to the correlation and forecast pages.")
 
-# 1) A click on the map is read BEFORE the sidebar widgets are created, so it can drive them.
-mode_now = state.get("color_mode")
-geom_now = COLOR_MODES[mode_now] or state.get("weather_geometry")
-event = st.session_state.get("map_chart")
-if event:
-    state.apply_map_click(event.get("selection", {}).get("points", []), geom_now)
+try:
+    df = data.load_nve()
+except data.DataError as e:
+    st.error(str(e))
+    st.stop()
+lo, hi = data.data_range(df)
+state.ensure_period(lo, hi)
 
-state.sidebar()
-start, end = state.period()
+# ------------------------------------------------------------------------- time frame
+with st.container(border=True):
+    state.period_slider(lo, hi)
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        state.horizon_input()
+    start, end = state.period()
+    fc_end = end + pd.Timedelta(weeks=int(state.get("horizon")))
+    c2.markdown(
+        f"**Map period / training window:** {start:%Y-%m-%d} → {end:%Y-%m-%d} ({(end - start).days // 7} weeks)  \n"
+        f"**Forecast window:** {end:%Y-%m-%d} → {fc_end:%Y-%m-%d}  \n"
+        "<span style='color:gray'>Shared with the forecast page.</span>", unsafe_allow_html=True)
 
-# 2) Map controls
-c1, c2, c3 = st.columns([1.3, 1.4, 1.3])
+# ------------------------------------------------------------------------- selectors
+c1, c2, c3 = st.columns([1.4, 1.5, 1.3])
 mode = c1.radio("Colour areas by", list(COLOR_MODES), key=state.bind("color_mode"), horizontal=True,
-                on_change=state.commit, args=("color_mode",))
+                on_change=state.commit, args=("color_mode",),
+                help="Price area = Magasinstatistikk for the price areas (EL); "
+                     "Water area = Magasinstatistikk for the water areas (VASS); "
+                     "Weather property = ERA5 weather, aggregated over the time frame.")
 geom = COLOR_MODES[mode]
-if geom is None:
-    geom = c2.radio("Weather areas", ["EL", "VASS", "NO"], key=state.bind("weather_geometry"),
-                    format_func=AREA_TYPES.get, horizontal=True,
-                    on_change=state.commit, args=("weather_geometry",))
+is_weather = geom is None
+if is_weather:
+    geom = c2.radio("Areas", list(AREA_TYPES), key=state.bind("weather_geometry"), format_func=AREA_TYPES.get,
+                    horizontal=True, on_change=state.commit, args=("weather_geometry",))
     var = c2.selectbox("Weather property", list(WEATHER_VARS), key=state.bind("weather_prop"),
-                       format_func=lambda v: WEATHER_VARS[v]["label"],
-                       on_change=state.commit, args=("weather_prop",))
+                       format_func=lambda v: WEATHER_VARS[v]["label"], on_change=state.commit,
+                       args=("weather_prop",))
+    c3.number_input("Weather sample points per area", 1, 15, key=state.bind("n_points"),
+                    on_change=state.commit, args=("n_points",),
+                    help="Random points inside each area polygon; the ERA5 values are averaged. "
+                         "More points = better area mean, slower first download.")
+    meta = WEATHER_VARS[var]
+    unit = data.weather_unit(var)
     stat = "Mean over period"
-    unit = WEATHER_VARS[var]["unit"] + ("/week" if WEATHER_VARS[var]["agg"] == "sum" else "")
-    legend_title = f"{WEATHER_VARS[var]['label']} ({unit})"
 else:
     c2.markdown(f"**Areas:** {AREA_TYPES[geom]}")
     var = c2.selectbox("Magasinstatistikk variable", list(RESERVOIR_VARS), key=state.bind("map_metric"),
-                       format_func=lambda v: RESERVOIR_VARS[v]["label"],
-                       on_change=state.commit, args=("map_metric",))
-    stat = c3.selectbox("Statistic", ["Mean over period", "Latest in period", "Change over period"],
+                       format_func=lambda v: RESERVOIR_VARS[v]["label"], on_change=state.commit,
+                       args=("map_metric",))
+    stat = c3.selectbox("Statistic over the time frame", ["Mean over period", "Latest in period", "Change over period"],
                         key=state.bind("map_stat"), on_change=state.commit, args=("map_stat",))
-    unit = RESERVOIR_VARS[var]["unit"]
-    legend_title = f"{RESERVOIR_VARS[var]['label']} ({unit})"
-overlays = c3.multiselect("Outline overlays", ["NO", "EL", "VASS"], key=state.bind("overlays"),
-                          format_func=AREA_TYPES.get, on_change=state.commit, args=("overlays",),
-                          help="Boundary lines of the other area types, drawn under the colours.")
-st.caption(f"Period: **{start:%Y-%m-%d} → {end:%Y-%m-%d}** (set in the sidebar)")
+    meta = RESERVOIR_VARS[var]
+    unit = meta["unit"]
+legend = f"{meta['label']} ({unit})"
 
-# 3) Values per area
-gj = load_geojson(geom)
-nrs = sorted(int(f["properties"]["area_nr"]) for f in gj["features"])
-if mode == "Weather property":
-    with st.spinner("Fetching ERA5 weather for the areas..."):
-        try:
-            vals = weather.period_summary(geom, nrs, start, end, var)
-        except Exception as e:
-            st.error(f"Weather data unavailable: {e}")
-            st.stop()
+# ------------------------------------------------------------------------- geometry + values
+try:
+    gj = geo.load_geojson(geom)                      # shapefile -> GeoJSON (cached)
+except Exception as e:
+    st.error(f"Could not convert the shapefiles to GeoJSON: {e}")
+    st.stop()
+nrs = geo.area_numbers(geom)
+names = geo.area_names(geom)
+
+if is_weather:
+    w_start = max(start, end - pd.DateOffset(years=MAX_WEATHER_YEARS))
+    if w_start > start:
+        st.info(f"Weather is limited to {MAX_WEATHER_YEARS} years: using {w_start:%Y-%m-%d} → {end:%Y-%m-%d}.")
+    n_pts = int(state.get("n_points"))
+    try:
+        with st.spinner(f"Fetching ERA5 weather for {len(nrs)} area(s) × {n_pts} points …"):
+            vals = {n: data.weather_period_value(geom, n, w_start, end, var, n_pts) for n in nrs}
+    except data.DataError as e:
+        st.error(f"Weather data unavailable: {e}")
+        st.stop()
 else:
-    df = nve.get_nve()
-    sub = df[(df.area_type == geom) & (df.date >= start) & (df.date <= end)]
-    g = sub.sort_values("date").groupby("area_nr")[var]
-    if stat == "Mean over period":
-        vals = g.mean()
-    elif stat == "Latest in period":
-        vals = g.last()
-    else:
-        vals = g.last() - g.first()
-    vals = vals.reindex(nrs)
-    vals.index = vals.index.astype(int)
+    vals = {n: data.area_value(df, geom, n, var, start, end, stat) for n in nrs}
+zs = [vals[n] for n in nrs]
+if all(pd.isna(z) for z in zs):
+    st.warning("No data for the selected property and time frame. Widen the time frame.")
+    st.stop()
 
-# 4) The map
-sel_type, sel_nr = state.get("area_type"), state.get("area_nr")
-names = area_names(geom)
+# ------------------------------------------------------------------------- the map
+sel_type, sel_nr = state.selected()
 fig = go.Figure(go.Choroplethmap(
-    geojson=gj, locations=nrs, featureidkey="properties.area_nr", z=[vals.get(n) for n in nrs],
-    text=[names[n] for n in nrs], colorscale=[[i / (len(SEQ_BLUE) - 1), c] for i, c in enumerate(SEQ_BLUE)],
-    marker=dict(opacity=0.82, line=dict(width=1.2, color="#ffffff")),
-    colorbar=dict(title=dict(text=legend_title, side="right"), thickness=14, len=0.7),
-    hovertemplate="<b>%{text}</b><br>" + legend_title + ": %{z:.2f}<extra></extra>",
-    selected=dict(marker=dict(opacity=1.0)), unselected=dict(marker=dict(opacity=0.82)),
+    geojson=gj, locations=nrs, featureidkey="properties.area_nr", z=zs,
+    text=[names[n] for n in nrs], colorscale=meta["scale"], zmid=meta["zmid"],
+    marker=dict(opacity=0.6, line=dict(width=1.5, color="#333333")),       # transparent fill + outlines
+    colorbar=dict(title=dict(text=legend, side="right"), thickness=14, len=0.75),
+    hovertemplate="<b>%{text}</b><br>" + legend + ": %{z:.2f}<extra></extra>",
+    selected=dict(marker=dict(opacity=0.6)), unselected=dict(marker=dict(opacity=0.6)),
 ))
 layers = []
-for ov in overlays:
-    if ov != geom:
-        layers.append(dict(sourcetype="geojson", source=load_geojson(ov), type="line",
-                           color="#52514e", line=dict(width=1.4)))
-if sel_type == geom:   # highlight the selected area
-    feat = [f for f in gj["features"] if int(f["properties"]["area_nr"]) == int(sel_nr)]
-    if feat:
-        layers.append(dict(sourcetype="geojson", source={"type": "FeatureCollection", "features": feat},
-                           type="line", color="#eb6834", line=dict(width=4)))
-fig.update_layout(map=dict(style=MAP_STYLE, center=dict(lat=65.2, lon=13.5), zoom=3.1, layers=layers),
-                  margin=dict(l=0, r=0, t=0, b=0), height=640, clickmode="event+select")
-
-if (geom == "VASS" or "VASS" in overlays) and is_placeholder("VASS"):
-    st.warning("The water-area (VASS) outlines are a **placeholder** (three latitude bands): NVE does not "
-               "publish the boundaries with Magasinstatistikk. Replace `data/geo/VASS.geojson` with the real "
-               "polygons - the values themselves are real.", icon="⚠️")
+if sel_type == geom:                                  # thick contrast outline round the clicked area
+    feats = [f for f in gj["features"] if int(f["properties"]["area_nr"]) == sel_nr]
+    if feats:
+        layers.append(dict(sourcetype="geojson", type="line", color=SELECT_COLOR, line=dict(width=5),
+                           source={"type": "FeatureCollection", "features": feats}))
+fig.update_layout(map=dict(style=MAP_STYLE, center=dict(lat=65.0, lon=13.0), zoom=3.1, layers=layers),
+                  margin=dict(l=0, r=0, t=0, b=0), height=660, clickmode="event+select",
+                  uirevision="map")                   # keep zoom/pan when the figure updates
 
 left, right = st.columns([3, 2], gap="large")
 with left:
-    st.plotly_chart(fig, key="map_chart", on_select="rerun", selection_mode="points",
-                    config={"scrollZoom": True})
+    chart_key = f"map_{geom}"
+    event = st.plotly_chart(fig, key=chart_key, on_select="rerun", selection_mode="points",
+                            config={"scrollZoom": True})
+    if state.handle_map_click(chart_key, event, geom, nrs):
+        st.rerun()                                    # redraw with the new outline
+    st.caption("Click an area to select it. Scroll to zoom, drag to pan.")
+
 with right:
     with st.container(border=True):
-        st.markdown(f"#### Selected area: {area_label(sel_type, sel_nr)}")
-        st.caption("Persisted across pages. Click the map or use the sidebar to change it.")
-        s = nve.area_series(sel_type, sel_nr, state.get("map_metric"), start, end)
-        figl = go.Figure(go.Scatter(x=s.index, y=s.values, mode="lines", line=dict(color=SERIES[0], width=2),
-                                    hovertemplate="%{x|%Y-%m-%d}<br>%{y:.2f}<extra></extra>"))
-        figl.update_layout(height=230, margin=dict(l=0, r=0, t=10, b=0),
-                           yaxis_title=label(state.get("map_metric")), hovermode="x")
-        st.plotly_chart(figl)
-        try:
-            st.page_link("pages/8_Sliding_Window_Correlation.py", label="Open correlation →", icon="📈")
-            st.page_link("pages/9_Water_Forecasting.py", label="Open forecasting →", icon="🔮")
-        except Exception:
-            pass
-    tbl = pd.DataFrame({"Area": [names[n] for n in nrs], legend_title: [vals.get(n) for n in nrs]})
-    st.dataframe(tbl.style.format({legend_title: "{:.2f}"}), hide_index=True)
+        st.markdown(f"#### Selected: {state.selected_label()}")
+        if sel_type != geom:
+            st.caption(f"This area belongs to the {AREA_TYPES[sel_type]} layer, which is not shown now.")
+        metric = state.get("map_metric")
+        s = data.area_series(df, sel_type, sel_nr, metric, start, end)
+        fig_s = go.Figure(go.Scatter(x=s.index, y=s.values, mode="lines", line=dict(color=SERIES_COLORS[0], width=2),
+                                     hovertemplate="%{x|%Y-%m-%d}<br>%{y:.2f}<extra></extra>"))
+        fig_s.update_layout(height=230, margin=dict(l=0, r=0, t=10, b=0), hovermode="x",
+                            yaxis_title=data.var_label(metric))
+        st.plotly_chart(fig_s)
+        st.caption("The selection is stored for the other pages.")
+        st.page_link("pages/8_Sliding_Window_Correlation.py", label="Open sliding-window correlation →", icon="📈")
+        st.page_link("pages/9_Water_Forecasting.py", label="Open forecasting →", icon="🔮")
+    table = pd.DataFrame({"Area": [names[n] for n in nrs], legend: zs})
+    st.dataframe(table.style.format({legend: "{:.2f}"}), hide_index=True)
 
 with st.expander("📄 About the map"):
     st.markdown(
-        "- **Price areas (EL)** NO1-NO5 and **Norway (NO)** are simplified outlines derived from the "
-        "electricitymaps-contrib zone geometries (`scripts/build_geojson.py`).\n"
-        "- **Water areas (VASS)** 1-3: placeholder geometry, see the warning above.\n"
-        "- Reservoir values: NVE Magasinstatistikk, weekly. Weather: Open-Meteo ERA5 daily, averaged over "
-        "three points per area and over the period.\n"
-        "- Forecast horizon and training window on the forecast page are the same settings as the "
-        "sidebar here."
+        "- **Geometry:** the shapefiles in `data/shapefiles` (Budområder = price areas, NVE_Region = NVE "
+        "regions) are read with `geopandas`, reprojected from EPSG:25833 to WGS84, simplified (500 m) and "
+        "converted to GeoJSON when first needed (`utils/geo.py`). Water areas are the NVE regions merged as "
+        "set in `utils/config.py` (assumed mapping: 1 = RS+RØ, 2 = RV, 3 = RM+RN). Norway = union of the price areas.\n"
+        "- **Reservoir values:** NVE Magasinstatistikk, weekly; statistic over the time frame as selected.\n"
+        "- **Weather:** Open-Meteo ERA5, daily; mean over random sample points inside each polygon "
+        "(the price-area polygons include coastal sea), then averaged over the time frame. Precipitation, "
+        "snow and radiation are shown as mean weekly totals.\n"
+        "- **Colours** are drawn at 60 % opacity so the base map stays visible."
     )
