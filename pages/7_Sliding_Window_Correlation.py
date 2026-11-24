@@ -25,7 +25,7 @@ except data.DataError as e:
 lo, hi = data.data_range(df)
 state.ensure_period(lo, hi)
 
-# ------------------------------------------------------------------------- area + time frame (shared)
+# area + time frame (shared)
 with st.container(border=True):
     state.area_picker()
     state.period_slider(lo, hi)
@@ -38,7 +38,7 @@ eff_start = max(start, end - pd.DateOffset(years=MAX_WEATHER_YEARS))
 if eff_start > start:
     st.info(f"Weather is limited to {MAX_WEATHER_YEARS} years: using {eff_start:%Y-%m-%d} → {end:%Y-%m-%d}.")
 
-# ------------------------------------------------------------------------- controls
+# controls
 c1, c2, c3, c4 = st.columns([1.2, 1.2, 1, 1])
 wvar = c1.selectbox("Meteorological property", list(WEATHER_VARS), key=state.bind("weather_prop"),
                     format_func=lambda v: WEATHER_VARS[v]["label"], on_change=state.commit, args=("weather_prop",))
@@ -55,7 +55,7 @@ how = st.radio("Transformation", analysis.TRANSFORMS, key=state.bind("corr_trans
                     "'Weekly change' correlates week-to-week differences; 'Seasonal anomaly' subtracts the "
                     "mean of each ISO week over the time frame (needs a few years).")
 
-# ------------------------------------------------------------------------- data
+# data
 reservoir = data.area_series(df, atype, anr, rvar, eff_start, end)
 if reservoir.dropna().shape[0] < window + 10:
     st.warning(f"Only {reservoir.dropna().shape[0]} weeks of data in the time frame; widen it or shorten the window.")
@@ -89,7 +89,7 @@ if len(rv):
 
 tab_slide, tab_lag, tab_all = st.tabs(["Sliding window", "Lag profile", "All weather properties"])
 
-# ------------------------------------------------------------------------- tab 1
+# tab 1
 with tab_slide:
     shown_w = wser.shift(lag)
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.28, 0.28, 0.44],
@@ -113,7 +113,7 @@ with tab_slide:
     st.caption(f"r at week t uses the {window} weeks ending at t. The weather is taken {abs(lag)} week(s) "
                f"{'earlier' if lag >= 0 else 'later'} than the reservoir value. Transformation: {how}.")
 
-# ------------------------------------------------------------------------- tab 2
+# tab 2
 with tab_lag:
     max_lag = st.slider("Lags shown (± weeks)", 4, 52, 26)
     prof = analysis.lag_profile(wser, reservoir, max_lag, how)
@@ -129,7 +129,7 @@ with tab_lag:
         st.caption(f"Strongest lag: **{best} weeks** (r = {prof[best]:.2f}). The selected lag is in orange. "
                    "A clear peak at a positive lag means the weather leads the reservoir: that is what a forecast can use.")
 
-# ------------------------------------------------------------------------- tab 3
+# tab 3
 with tab_all:
     rows = []
     for v in WEATHER_VARS:

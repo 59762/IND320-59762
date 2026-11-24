@@ -23,7 +23,7 @@ lo, hi = data.data_range(df)
 state.ensure_period(lo, hi)
 hi_ts = pd.Timestamp(hi)
 
-# ------------------------------------------------------------------------- area, variable, time frame
+# area, variable, time frame
 with st.container(border=True):
     state.area_picker()
     state.period_slider(lo, hi, "Training window (shared with the map)")
@@ -62,7 +62,7 @@ if len(y) < 40:
     st.stop()
 clip = RESERVOIR_VARS[fvar]["clip"]
 
-# ------------------------------------------------------------------------- model + parameters
+# model + parameters
 family = st.radio("Model family", ["SARIMAX", "Machine learning"], horizontal=True)
 with st.form("forecast_form"):
     if family == "SARIMAX":
@@ -105,7 +105,7 @@ with st.form("forecast_form"):
     level = e3.slider("Confidence level (%)", 50, 99, 95)
     run = st.form_submit_button("Run forecast", type="primary")
 
-# ------------------------------------------------------------------------- run
+# run
 if run:
     exog_hist = exog_fut = None
     n_clim = 0
@@ -152,7 +152,7 @@ actual = full[(full.index > history.index[-1]) & (full.index <= fc.mean.index[-1
 ev = F.evaluate(fc, actual, float(history.iloc[-1]))
 unit = RESERVOIR_VARS[res["var"]]["unit"]
 
-# ------------------------------------------------------------------------- results
+# results
 st.subheader(f"{fc.description} · {res['area']}")
 for note in fc.notes:
     st.warning(note)

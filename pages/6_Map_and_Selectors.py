@@ -25,7 +25,7 @@ except data.DataError as e:
 lo, hi = data.data_range(df)
 state.ensure_period(lo, hi)
 
-# ------------------------------------------------------------------------- time frame
+# time frame
 with st.container(border=True):
     state.period_slider(lo, hi)
     c1, c2 = st.columns([1, 3])
@@ -38,7 +38,7 @@ with st.container(border=True):
         f"**Forecast window:** {end:%Y-%m-%d} → {fc_end:%Y-%m-%d}  \n"
         "<span style='color:gray'>Shared with the forecast page.</span>", unsafe_allow_html=True)
 
-# ------------------------------------------------------------------------- selectors
+# selectors
 c1, c2, c3 = st.columns([1.4, 1.5, 1.3])
 mode = c1.radio("Colour areas by", list(COLOR_MODES), key=state.bind("color_mode"), horizontal=True,
                 on_change=state.commit, args=("color_mode",),
@@ -71,7 +71,7 @@ else:
     unit = meta["unit"]
 legend = f"{meta['label']} ({unit})"
 
-# ------------------------------------------------------------------------- geometry + values
+# geometry + values
 try:
     gj = geo.load_geojson(geom)                      # shapefile -> GeoJSON (cached)
 except Exception as e:
@@ -98,7 +98,7 @@ if all(pd.isna(z) for z in zs):
     st.warning("No data for the selected property and time frame. Widen the time frame.")
     st.stop()
 
-# ------------------------------------------------------------------------- the map
+# the map
 sel_type, sel_nr = state.selected()
 fig = go.Figure(go.Choroplethmap(
     geojson=gj, locations=nrs, featureidkey="properties.area_nr", z=zs,
@@ -140,8 +140,8 @@ with right:
                             yaxis_title=data.var_label(metric))
         st.plotly_chart(fig_s)
         st.caption("The selection is stored for the other pages.")
-        st.page_link("pages/8_Sliding_Window_Correlation.py", label="Open sliding-window correlation →", icon="📈")
-        st.page_link("pages/9_Water_Forecasting.py", label="Open forecasting →", icon="🔮")
+        st.page_link("pages/7_Sliding_Window_Correlation.py", label="Open sliding-window correlation →", icon="📈")
+        st.page_link("pages/8_Water_Forecasting.py", label="Open forecasting →", icon="🔮")
     table = pd.DataFrame({"Area": [names[n] for n in nrs], legend: zs})
     st.dataframe(table.style.format({legend: "{:.2f}"}), hide_index=True)
 
