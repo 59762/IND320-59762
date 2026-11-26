@@ -19,5 +19,8 @@ shapely>=2.0
 scipy>=1.12
 statsmodels>=0.14
 scikit-learn>=1.4
+
+# Part 4 additions
+river>=0.21
 pyogrio>=0.7
 pyproj>=3.6
