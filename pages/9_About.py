@@ -7,7 +7,7 @@ AUTHOR = "Alina Shah"
 PROGRAMME = "MSc Data Science, NMBU"
 COURSE = "IND320 – Project Work"
 APP_VERSION = "Part 4 – Machine learning"
-LAST_UPDATED = "2026-11-24"          # update by hand when you deploy; date.today() would change daily
+LAST_UPDATED = "2026-11-26"          # update by hand when you deploy; date.today() would change daily
 REPO_URL = "https://github.com/59762/IND320-59762"
 APP_URL = "https://ind320-59762.streamlit.app/"
 LINKEDIN_URL = "https://www.linkedin.com/in/alinas7"
@@ -125,6 +125,6 @@ with side:
             f"**Stage:** {APP_VERSION}  \n"
             f"**Last updated:** {LAST_UPDATED}"
         )
-
+        
 st.divider()
 st.caption(f"© {AUTHOR} · Built for {COURSE}")
